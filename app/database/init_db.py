@@ -1,7 +1,14 @@
-from sqlalchemy import select, text
+﻿from sqlalchemy import select, text
 
 from app.database.audit_models import GovernanceAuditRecord
 from app.database.base import Base
+from app.database.commerce_models import (
+    CustomerRecord,
+    OrderItemRecord,
+    OrderRecord,
+    PaymentRecord,
+    ProductRecord,
+)
 from app.database.models import SchemaVersion
 from app.database.session import AsyncSessionFactory, engine
 
@@ -9,7 +16,14 @@ from app.database.session import AsyncSessionFactory, engine
 async def init_database() -> None:
     """Create local database tables and register the schema version."""
 
-    _ = GovernanceAuditRecord
+    _ = (
+        GovernanceAuditRecord,
+        CustomerRecord,
+        ProductRecord,
+        OrderRecord,
+        OrderItemRecord,
+        PaymentRecord,
+    )
 
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
