@@ -1,17 +1,24 @@
-﻿.venv/
+﻿# Python
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Coverage
 .coverage
+coverage.json
 htmlcov/
-.env
+
+# Local databases and environment
 *.db
 *.sqlite
 *.sqlite3
-logs/
-data/*.db
-data/*.sqlite
-.vscode/
-.idea/
+.venv/
+.env
+
+# Temporary and backup files
+*.bak
+*_context.txt
+*_inspection.txt
+api_context.txt
