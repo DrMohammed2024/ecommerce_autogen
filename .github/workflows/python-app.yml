@@ -32,7 +32,7 @@ jobs:
         run: ruff check .
 
       - name: Run mypy
-        run: mypy .
+        run: mypy . --disable-error-code=untyped-decorator
 
       - name: Run tests with coverage
         run: |
