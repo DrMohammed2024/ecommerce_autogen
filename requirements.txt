@@ -26,3 +26,5 @@ ruff==0.15.22
 SQLAlchemy==2.0.51
 typing-inspection==0.4.2
 typing_extensions==4.16.0
+
+httpx>=0.27.0
