@@ -1,4 +1,4 @@
-﻿import pytest
+import pytest
 from sqlalchemy import inspect
 from sqlalchemy.engine import Connection
 from sqlalchemy.engine.interfaces import ReflectedForeignKeyConstraint
@@ -66,22 +66,12 @@ async def test_commerce_foreign_keys_are_created() -> None:
             "payments",
         )
 
-    order_targets = {
-        foreign_key["referred_table"]
-        for foreign_key in order_foreign_keys
-    }
-    order_item_targets = {
-        foreign_key["referred_table"]
-        for foreign_key in order_item_foreign_keys
-    }
-    payment_targets = {
-        foreign_key["referred_table"]
-        for foreign_key in payment_foreign_keys
-    }
+    order_targets = {foreign_key["referred_table"] for foreign_key in order_foreign_keys}
+    order_item_targets = {foreign_key["referred_table"] for foreign_key in order_item_foreign_keys}
+    payment_targets = {foreign_key["referred_table"] for foreign_key in payment_foreign_keys}
 
     assert "customers" in order_targets
     assert {"orders", "products"}.issubset(order_item_targets)
     assert "orders" in payment_targets
 
     await dispose_database()
-

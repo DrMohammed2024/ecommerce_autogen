@@ -1,4 +1,4 @@
-﻿from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
@@ -133,18 +133,13 @@ async def test_list_by_customer_returns_only_matching_orders() -> None:
         await repository.create(second)
         await repository.create(unrelated)
 
-        stored = await repository.list_by_customer(
-            matching_customer_id
-        )
+        stored = await repository.list_by_customer(matching_customer_id)
 
     assert {order.id for order in stored} == {
         first.id,
         second.id,
     }
-    assert all(
-        order.customer_id == matching_customer_id
-        for order in stored
-    )
+    assert all(order.customer_id == matching_customer_id for order in stored)
 
 
 async def test_list_by_customer_uses_stable_creation_order() -> None:
@@ -217,18 +212,13 @@ async def test_list_by_status_returns_only_matching_orders() -> None:
         await repository.create(second_draft)
         await repository.create(pending)
 
-        stored = await repository.list_by_status(
-            OrderStatus.DRAFT
-        )
+        stored = await repository.list_by_status(OrderStatus.DRAFT)
 
     assert {order.id for order in stored} == {
         first_draft.id,
         second_draft.id,
     }
-    assert all(
-        order.status is OrderStatus.DRAFT
-        for order in stored
-    )
+    assert all(order.status is OrderStatus.DRAFT for order in stored)
 
 
 async def test_list_by_status_applies_limit() -> None:
@@ -349,9 +339,7 @@ async def test_list_by_status_rejects_non_positive_limit(
 
 
 async def test_loaded_created_at_is_timezone_aware_utc() -> None:
-    order = make_order(
-        created_at=datetime(2026, 4, 1, 12, 30, tzinfo=UTC)
-    )
+    order = make_order(created_at=datetime(2026, 4, 1, 12, 30, tzinfo=UTC))
 
     async with AsyncSessionFactory() as session:
         repository = OrderRepository(session)
@@ -364,3 +352,159 @@ async def test_loaded_created_at_is_timezone_aware_utc() -> None:
     assert stored.created_at.utcoffset() == timedelta(0)
 
 
+async def test_update_status_changes_only_status() -> None:
+    order = make_order(
+        status=OrderStatus.DRAFT,
+        notes="Keep these notes",
+        item_count=2,
+    )
+
+    async with AsyncSessionFactory() as session:
+        repository = OrderRepository(session)
+        await repository.create(order)
+
+        updated = await repository.update_status(
+            order.id,
+            OrderStatus.PENDING_APPROVAL,
+        )
+
+    assert updated is not None
+    assert updated.id == order.id
+    assert updated.status is OrderStatus.PENDING_APPROVAL
+    assert updated.customer_id == order.customer_id
+    assert updated.currency is order.currency
+    assert updated.notes == order.notes
+    assert len(updated.items) == len(order.items)
+
+    updated_items = sorted(
+        updated.items,
+        key=lambda item: item.sku,
+    )
+    original_items = sorted(
+        order.items,
+        key=lambda item: item.sku,
+    )
+
+    for updated_item, original_item in zip(
+        updated_items,
+        original_items,
+        strict=True,
+    ):
+        assert updated_item.product_id == original_item.product_id
+        assert updated_item.sku == original_item.sku
+        assert updated_item.product_name == original_item.product_name
+        assert updated_item.quantity == original_item.quantity
+        assert updated_item.unit_price == original_item.unit_price
+        assert updated_item.currency is original_item.currency
+    assert updated.created_at == order.created_at
+
+
+async def test_update_status_is_persisted() -> None:
+    order = make_order(status=OrderStatus.DRAFT)
+
+    async with AsyncSessionFactory() as session:
+        repository = OrderRepository(session)
+        await repository.create(order)
+
+        await repository.update_status(
+            order.id,
+            OrderStatus.PENDING_APPROVAL,
+        )
+
+    async with AsyncSessionFactory() as session:
+        repository = OrderRepository(session)
+        stored = await repository.get_by_id(order.id)
+
+    assert stored is not None
+    assert stored.status is OrderStatus.PENDING_APPROVAL
+
+
+async def test_update_status_returns_none_for_unknown_order() -> None:
+    async with AsyncSessionFactory() as session:
+        repository = OrderRepository(session)
+
+        updated = await repository.update_status(
+            uuid4(),
+            OrderStatus.PENDING_APPROVAL,
+        )
+
+    assert updated is None
+
+
+async def test_list_all_returns_orders_in_stable_creation_order() -> None:
+    later_order = make_order(
+        created_at=datetime(2026, 4, 2, 12, 30, tzinfo=UTC),
+    )
+    earlier_order = make_order(
+        created_at=datetime(2026, 4, 1, 12, 30, tzinfo=UTC),
+    )
+
+    async with AsyncSessionFactory() as session:
+        repository = OrderRepository(session)
+        await repository.create(later_order)
+        await repository.create(earlier_order)
+
+        stored_orders = await repository.list_all()
+
+    assert [order.id for order in stored_orders] == [
+        earlier_order.id,
+        later_order.id,
+    ]
+
+
+async def test_list_all_respects_limit() -> None:
+    first_order = make_order(
+        created_at=datetime(2026, 4, 1, 12, 30, tzinfo=UTC),
+    )
+    second_order = make_order(
+        created_at=datetime(2026, 4, 2, 12, 30, tzinfo=UTC),
+    )
+
+    async with AsyncSessionFactory() as session:
+        repository = OrderRepository(session)
+        await repository.create(first_order)
+        await repository.create(second_order)
+
+        stored_orders = await repository.list_all(limit=1)
+
+    assert len(stored_orders) == 1
+    assert stored_orders[0].id == first_order.id
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+async def test_list_all_rejects_non_positive_limit(
+    limit: int,
+) -> None:
+    async with AsyncSessionFactory() as session:
+        repository = OrderRepository(session)
+
+        with pytest.raises(
+            ValueError,
+            match="limit must be greater than zero",
+        ):
+            await repository.list_all(limit=limit)
+
+
+async def test_create_without_commit_can_be_rolled_back() -> None:
+    order = make_order(notes="Rollback order")
+
+    async with AsyncSessionFactory() as session:
+        repository = OrderRepository(session)
+
+        created = await repository.create(
+            order,
+            commit=False,
+        )
+
+        assert created.id == order.id
+
+        visible_in_transaction = await repository.get_by_id(order.id)
+        assert visible_in_transaction is not None
+
+        await session.rollback()
+
+    async with AsyncSessionFactory() as session:
+        repository = OrderRepository(session)
+        persisted = await repository.get_by_id(order.id)
+
+    assert persisted is None

@@ -1,4 +1,4 @@
-﻿from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import UUID, uuid4
@@ -171,10 +171,7 @@ async def test_list_by_order_id_returns_only_matching_payments() -> None:
         first.id,
         second.id,
     }
-    assert all(
-        payment.order_id == first_order.id
-        for payment in stored
-    )
+    assert all(payment.order_id == first_order.id for payment in stored)
 
 
 async def test_list_by_order_id_uses_stable_creation_order() -> None:
@@ -263,18 +260,13 @@ async def test_list_by_status_returns_only_matching_payments() -> None:
         await repository.create(second_pending)
         await repository.create(failed)
 
-        stored = await repository.list_by_status(
-            PaymentStatus.PENDING
-        )
+        stored = await repository.list_by_status(PaymentStatus.PENDING)
 
     assert {payment.id for payment in stored} == {
         first_pending.id,
         second_pending.id,
     }
-    assert all(
-        payment.status is PaymentStatus.PENDING
-        for payment in stored
-    )
+    assert all(payment.status is PaymentStatus.PENDING for payment in stored)
 
 
 async def test_list_by_status_applies_limit() -> None:

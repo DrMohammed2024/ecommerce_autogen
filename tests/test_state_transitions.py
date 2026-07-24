@@ -126,10 +126,7 @@ async def test_order_transition_requires_approval_above_budget() -> None:
 
     assert outcome.applied is False
     assert outcome.order.status is OrderStatus.DRAFT
-    assert (
-        outcome.governance_result.decision
-        is GovernanceDecision.REQUIRE_APPROVAL
-    )
+    assert outcome.governance_result.decision is GovernanceDecision.REQUIRE_APPROVAL
     assert outcome.governance_result.requires_human is True
 
 
@@ -197,10 +194,7 @@ async def test_payment_transition_requires_budget_approval() -> None:
 
     assert outcome.applied is False
     assert outcome.payment.status is PaymentStatus.PENDING
-    assert (
-        outcome.governance_result.decision
-        is GovernanceDecision.REQUIRE_APPROVAL
-    )
+    assert outcome.governance_result.decision is GovernanceDecision.REQUIRE_APPROVAL
 
 
 async def test_terminal_order_state_cannot_transition() -> None:

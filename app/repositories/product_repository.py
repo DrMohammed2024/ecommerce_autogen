@@ -1,4 +1,4 @@
-﻿from collections.abc import Sequence
+from collections.abc import Sequence
 from datetime import UTC
 from uuid import UUID
 
@@ -59,9 +59,7 @@ class ProductRepository:
     ) -> Product | None:
         """Return one product by SKU, or None when not found."""
 
-        statement = select(ProductRecord).where(
-            ProductRecord.sku == sku
-        )
+        statement = select(ProductRecord).where(ProductRecord.sku == sku)
         result = await self._session.execute(statement)
         record = result.scalar_one_or_none()
 
@@ -125,6 +123,8 @@ class ProductRepository:
         self,
         product_id: UUID,
         quantity_delta: int,
+        *,
+        commit: bool = True,
     ) -> Product | None:
         """Adjust stock by a signed quantity without allowing negative stock."""
 
@@ -142,7 +142,11 @@ class ProductRepository:
 
         if new_quantity != record.stock_quantity:
             record.stock_quantity = new_quantity
-            await self._session.commit()
+            await self._session.flush()
+
+            if commit:
+                await self._session.commit()
+
             await self._session.refresh(record)
 
         return self._to_domain(record)

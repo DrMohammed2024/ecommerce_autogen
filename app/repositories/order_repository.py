@@ -1,4 +1,4 @@
-﻿from collections.abc import Sequence
+from collections.abc import Sequence
 from datetime import UTC
 from uuid import UUID
 
@@ -17,7 +17,12 @@ class OrderRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def create(self, order: Order) -> Order:
+    async def create(
+        self,
+        order: Order,
+        *,
+        commit: bool = True,
+    ) -> Order:
         """Persist an order and all its items in one transaction."""
 
         order_record = OrderRecord(
@@ -45,7 +50,11 @@ class OrderRepository:
         self._session.add(order_record)
         self._session.add_all(item_records)
 
-        await self._session.commit()
+        await self._session.flush()
+
+        if commit:
+            await self._session.commit()
+
         await self._session.refresh(order_record)
 
         return await self._to_domain(order_record)
@@ -65,6 +74,28 @@ class OrderRepository:
             return None
 
         return await self._to_domain(record)
+
+    async def list_all(
+        self,
+        limit: int = 100,
+    ) -> tuple[Order, ...]:
+        """Return all orders in stable creation order."""
+
+        self._validate_limit(limit)
+
+        statement = (
+            select(OrderRecord)
+            .order_by(
+                OrderRecord.created_at.asc(),
+                OrderRecord.id.asc(),
+            )
+            .limit(limit)
+        )
+
+        result = await self._session.execute(statement)
+        records: Sequence[OrderRecord] = result.scalars().all()
+
+        return tuple([await self._to_domain(record) for record in records])
 
     async def list_by_customer(
         self,
@@ -88,9 +119,7 @@ class OrderRepository:
         result = await self._session.execute(statement)
         records: Sequence[OrderRecord] = result.scalars().all()
 
-        return tuple(
-            [await self._to_domain(record) for record in records]
-        )
+        return tuple([await self._to_domain(record) for record in records])
 
     async def list_by_status(
         self,
@@ -114,9 +143,7 @@ class OrderRepository:
         result = await self._session.execute(statement)
         records: Sequence[OrderRecord] = result.scalars().all()
 
-        return tuple(
-            [await self._to_domain(record) for record in records]
-        )
+        return tuple([await self._to_domain(record) for record in records])
 
     async def update_notes(
         self,
@@ -134,6 +161,28 @@ class OrderRepository:
             return None
 
         record.notes = notes
+
+        await self._session.commit()
+        await self._session.refresh(record)
+
+        return await self._to_domain(record)
+
+    async def update_status(
+        self,
+        order_id: UUID,
+        status: OrderStatus,
+    ) -> Order | None:
+        """Update only the persisted order status."""
+
+        record = await self._session.get(
+            OrderRecord,
+            str(order_id),
+        )
+
+        if record is None:
+            return None
+
+        record.status = status.value
 
         await self._session.commit()
         await self._session.refresh(record)

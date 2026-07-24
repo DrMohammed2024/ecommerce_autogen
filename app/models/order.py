@@ -23,15 +23,11 @@ class Order(StrictModel):
     def validate_item_currencies(self) -> "Order":
         """Require every order item to use the order currency."""
 
-        invalid_items = [
-            item.sku for item in self.items if item.currency != self.currency
-        ]
+        invalid_items = [item.sku for item in self.items if item.currency != self.currency]
 
         if invalid_items:
             joined_skus = ", ".join(invalid_items)
-            raise ValueError(
-                f"Order item currencies must match order currency: {joined_skus}"
-            )
+            raise ValueError(f"Order item currencies must match order currency: {joined_skus}")
 
         return self
 

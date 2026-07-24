@@ -1,4 +1,4 @@
-﻿from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator
 from uuid import uuid4
 
 import pytest
@@ -21,9 +21,7 @@ async def isolate_customer_repository_records() -> AsyncIterator[None]:
 
     async with AsyncSessionFactory() as session:
         await session.execute(
-            delete(CustomerRecord).where(
-                CustomerRecord.email.like(_TEST_EMAIL_PATTERN)
-            )
+            delete(CustomerRecord).where(CustomerRecord.email.like(_TEST_EMAIL_PATTERN))
         )
         await session.commit()
 
@@ -31,9 +29,7 @@ async def isolate_customer_repository_records() -> AsyncIterator[None]:
 
     async with AsyncSessionFactory() as session:
         await session.execute(
-            delete(CustomerRecord).where(
-                CustomerRecord.email.like(_TEST_EMAIL_PATTERN)
-            )
+            delete(CustomerRecord).where(CustomerRecord.email.like(_TEST_EMAIL_PATTERN))
         )
         await session.commit()
 
@@ -109,9 +105,7 @@ async def test_get_by_id_returns_none_for_unknown_customer() -> None:
 async def test_get_by_email_returns_none_for_unknown_customer() -> None:
     async with AsyncSessionFactory() as session:
         repository = CustomerRepository(session)
-        stored = await repository.get_by_email(
-            "repo-test-unknown@example.com"
-        )
+        stored = await repository.get_by_email("repo-test-unknown@example.com")
 
     assert stored is None
 

@@ -26,30 +26,21 @@ def evaluate_request(
         return GovernanceResult(
             request_id=request.id,
             decision=GovernanceDecision.DENY,
-            reasons=(
-                "Payment execution is disabled by the local governance policy.",
-            ),
+            reasons=("Payment execution is disabled by the local governance policy.",),
         )
 
-    if (
-        request.action in EXTERNAL_ACTIONS
-        and active_policy.block_external_actions
-    ):
+    if request.action in EXTERNAL_ACTIONS and active_policy.block_external_actions:
         return GovernanceResult(
             request_id=request.id,
             decision=GovernanceDecision.DENY,
-            reasons=(
-                "External actions are disabled by the local governance policy.",
-            ),
+            reasons=("External actions are disabled by the local governance policy.",),
         )
 
     if request.amount > active_policy.max_human_approved_amount:
         return GovernanceResult(
             request_id=request.id,
             decision=GovernanceDecision.DENY,
-            reasons=(
-                "The requested amount exceeds the maximum permitted amount.",
-            ),
+            reasons=("The requested amount exceeds the maximum permitted amount.",),
         )
 
     if request.amount > active_policy.max_automatic_amount:
@@ -57,24 +48,18 @@ def evaluate_request(
             return GovernanceResult(
                 request_id=request.id,
                 decision=GovernanceDecision.REQUIRE_APPROVAL,
-                reasons=(
-                    "The requested amount requires explicit human approval.",
-                ),
+                reasons=("The requested amount requires explicit human approval.",),
                 requires_human=True,
             )
 
         return GovernanceResult(
             request_id=request.id,
             decision=GovernanceDecision.ALLOW,
-            reasons=(
-                "The requested amount has explicit human approval.",
-            ),
+            reasons=("The requested amount has explicit human approval.",),
         )
 
     return GovernanceResult(
         request_id=request.id,
         decision=GovernanceDecision.ALLOW,
-        reasons=(
-            "The requested action is within the automatic policy limits.",
-        ),
+        reasons=("The requested action is within the automatic policy limits.",),
     )

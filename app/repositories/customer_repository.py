@@ -1,4 +1,4 @@
-﻿from collections.abc import Sequence
+from collections.abc import Sequence
 from datetime import UTC
 from uuid import UUID
 
@@ -50,9 +50,7 @@ class CustomerRepository:
     async def get_by_email(self, email: EmailStr | str) -> Customer | None:
         """Return one customer by email address, or None when not found."""
 
-        statement = select(CustomerRecord).where(
-            CustomerRecord.email == str(email)
-        )
+        statement = select(CustomerRecord).where(CustomerRecord.email == str(email))
         result = await self._session.execute(statement)
         record = result.scalar_one_or_none()
 
@@ -150,6 +148,3 @@ class CustomerRepository:
             is_active=record.is_active,
             created_at=created_at,
         )
-
-
-
