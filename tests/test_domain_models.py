@@ -1,4 +1,4 @@
-from decimal import Decimal
+﻿from decimal import Decimal
 
 import pytest
 from pydantic import ValidationError
@@ -182,5 +182,5 @@ def test_models_reject_unknown_fields() -> None:
         Customer(
             full_name="Unknown Field",
             email="valid@example.com",
-            unsupported_field="value",
+            unsupported_field="value",  # type: ignore[call-arg]
         )
