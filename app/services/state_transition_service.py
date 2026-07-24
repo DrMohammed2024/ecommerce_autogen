@@ -131,9 +131,7 @@ class StateTransitionService:
         applied = evaluation.result.decision is GovernanceDecision.ALLOW
 
         if applied:
-            transitioned_order = order.model_copy(
-                update={"status": target_status}
-            )
+            transitioned_order = order.model_copy(update={"status": target_status})
 
         return OrderTransitionOutcome(
             original_order=order,
@@ -192,9 +190,7 @@ class StateTransitionService:
         applied = evaluation.result.decision is GovernanceDecision.ALLOW
 
         if applied:
-            transitioned_payment = payment.model_copy(
-                update={"status": target_status}
-            )
+            transitioned_payment = payment.model_copy(update={"status": target_status})
 
         return PaymentTransitionOutcome(
             original_payment=payment,

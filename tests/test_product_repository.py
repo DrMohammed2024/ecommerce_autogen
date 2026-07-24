@@ -1,4 +1,4 @@
-﻿from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
@@ -40,9 +40,7 @@ async def clean_test_products() -> None:
 
     async with AsyncSessionFactory() as session:
         await session.execute(
-            delete(ProductRecord).where(
-                ProductRecord.sku.like(f"{TEST_SKU_PREFIX}%")
-            )
+            delete(ProductRecord).where(ProductRecord.sku.like(f"{TEST_SKU_PREFIX}%"))
         )
         await session.commit()
 
@@ -110,9 +108,7 @@ async def test_get_by_id_returns_none_for_unknown_product() -> None:
 async def test_get_by_sku_returns_none_for_unknown_product() -> None:
     async with AsyncSessionFactory() as session:
         repository = ProductRepository(session)
-        stored = await repository.get_by_sku(
-            f"{TEST_SKU_PREFIX}unknown"
-        )
+        stored = await repository.get_by_sku(f"{TEST_SKU_PREFIX}unknown")
 
     assert stored is None
 
@@ -128,7 +124,7 @@ async def test_list_active_returns_only_active_products() -> None:
         repository = ProductRepository(session)
         await repository.create(active_product)
         await repository.create(inactive_product)
-        products = await repository.list_active()
+        products = await repository.list_active(limit=1000)
 
     returned_ids = {product.id for product in products}
 
@@ -265,9 +261,7 @@ async def test_deactivated_product_is_excluded_from_active_list() -> None:
         await repository.deactivate(product.id)
         active_products = await repository.list_active()
 
-    assert product.id not in {
-        active_product.id for active_product in active_products
-    }
+    assert product.id not in {active_product.id for active_product in active_products}
 
 
 async def test_list_active_rejects_non_positive_limit() -> None:
@@ -279,3 +273,32 @@ async def test_list_active_rejects_non_positive_limit() -> None:
             match="limit must be greater than zero",
         ):
             await repository.list_active(limit=0)
+
+
+async def test_adjust_stock_without_commit_can_be_rolled_back() -> None:
+    product = make_product(
+        "adjust-stock-rollback",
+        stock_quantity=10,
+    )
+
+    async with AsyncSessionFactory() as session:
+        repository = ProductRepository(session)
+        await repository.create(product)
+
+        adjusted = await repository.adjust_stock(
+            product.id,
+            -4,
+            commit=False,
+        )
+
+        assert adjusted is not None
+        assert adjusted.stock_quantity == 6
+
+        await session.rollback()
+
+    async with AsyncSessionFactory() as session:
+        repository = ProductRepository(session)
+        persisted = await repository.get_by_id(product.id)
+
+    assert persisted is not None
+    assert persisted.stock_quantity == 10

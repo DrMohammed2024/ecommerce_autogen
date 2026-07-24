@@ -1,4 +1,4 @@
-﻿from sqlalchemy import select, text
+from sqlalchemy import select, text
 
 from app.database.audit_models import GovernanceAuditRecord
 from app.database.base import Base

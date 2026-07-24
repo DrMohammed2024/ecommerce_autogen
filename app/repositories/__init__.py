@@ -1,4 +1,4 @@
-﻿from app.repositories.customer_repository import CustomerRepository
+from app.repositories.customer_repository import CustomerRepository
 from app.repositories.governance_audit_repository import (
     GovernanceAuditRepository,
 )

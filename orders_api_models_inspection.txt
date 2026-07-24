@@ -1,0 +1,967 @@
+﻿
+===== .\app\models\common.py =====
+
+from decimal import Decimal
+from enum import StrEnum
+
+from pydantic import BaseModel, ConfigDict
+
+
+class StrictModel(BaseModel):
+    """Base model with strict and immutable domain behavior."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        str_strip_whitespace=True,
+        validate_assignment=True,
+    )
+
+
+class Currency(StrEnum):
+    """Supported currencies for local domain validation."""
+
+    USD = "USD"
+    EUR = "EUR"
+    GBP = "GBP"
+
+
+class OrderStatus(StrEnum):
+    """Lifecycle states supported by an order."""
+
+    DRAFT = "draft"
+    PENDING_APPROVAL = "pending_approval"
+    APPROVED = "approved"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+
+
+class PaymentStatus(StrEnum):
+    """Lifecycle states supported by a payment."""
+
+    PENDING = "pending"
+    AUTHORIZED = "authorized"
+    CAPTURED = "captured"
+    FAILED = "failed"
+    REFUNDED = "refunded"
+    CANCELLED = "cancelled"
+
+
+MONEY_QUANTUM = Decimal("0.01")
+
+===== .\app\models\order.py =====
+
+from datetime import UTC, datetime
+from decimal import Decimal
+from uuid import UUID, uuid4
+
+from pydantic import Field, computed_field, model_validator
+
+from app.models.common import MONEY_QUANTUM, Currency, OrderStatus, StrictModel
+from app.models.order_item import OrderItem
+
+
+class Order(StrictModel):
+    """Represents a customer order and its line items."""
+
+    id: UUID = Field(default_factory=uuid4)
+    customer_id: UUID
+    items: tuple[OrderItem, ...] = Field(min_length=1)
+    currency: Currency = Currency.USD
+    status: OrderStatus = OrderStatus.DRAFT
+    notes: str | None = Field(default=None, max_length=1000)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @model_validator(mode="after")
+    def validate_item_currencies(self) -> "Order":
+        """Require every order item to use the order currency."""
+
+        invalid_items = [
+            item.sku for item in self.items if item.currency != self.currency
+        ]
+
+        if invalid_items:
+            joined_skus = ", ".join(invalid_items)
+            raise ValueError(
+                f"Order item currencies must match order currency: {joined_skus}"
+            )
+
+        return self
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def total_amount(self) -> Decimal:
+        """Return the complete order value."""
+
+        total = sum(
+            (item.line_total for item in self.items),
+            start=Decimal("0.00"),
+        )
+        return total.quantize(MONEY_QUANTUM)
+
+===== .\app\models\order_item.py =====
+
+from decimal import Decimal
+from uuid import UUID
+
+from pydantic import Field, computed_field, field_validator
+
+from app.models.common import MONEY_QUANTUM, Currency, StrictModel
+
+
+class OrderItem(StrictModel):
+    """Represents one product line inside an order."""
+
+    product_id: UUID
+    sku: str = Field(min_length=1, max_length=64)
+    product_name: str = Field(min_length=2, max_length=200)
+    quantity: int = Field(gt=0)
+    unit_price: Decimal = Field(gt=Decimal("0"))
+    currency: Currency = Currency.USD
+
+    @field_validator("unit_price")
+    @classmethod
+    def normalize_unit_price(cls, value: Decimal) -> Decimal:
+        """Normalize the item price to two decimal places."""
+
+        return value.quantize(MONEY_QUANTUM)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def line_total(self) -> Decimal:
+        """Return the total price for this order line."""
+
+        return (self.unit_price * self.quantity).quantize(MONEY_QUANTUM)
+
+===== .\app\models\customer.py =====
+
+from datetime import UTC, datetime
+from uuid import UUID, uuid4
+
+from pydantic import EmailStr, Field
+
+from app.models.common import StrictModel
+
+
+class Customer(StrictModel):
+    """Represents a customer in the local commerce domain."""
+
+    id: UUID = Field(default_factory=uuid4)
+    full_name: str = Field(min_length=2, max_length=120)
+    email: EmailStr
+    phone: str | None = Field(default=None, min_length=7, max_length=30)
+    is_active: bool = True
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+===== .\app\models\product.py =====
+
+from datetime import UTC, datetime
+from decimal import Decimal
+from uuid import UUID, uuid4
+
+from pydantic import Field, field_validator
+
+from app.models.common import MONEY_QUANTUM, Currency, StrictModel
+
+
+class Product(StrictModel):
+    """Represents a sellable product."""
+
+    id: UUID = Field(default_factory=uuid4)
+    sku: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._-]+$")
+    name: str = Field(min_length=2, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    unit_price: Decimal = Field(gt=Decimal("0"))
+    currency: Currency = Currency.USD
+    stock_quantity: int = Field(default=0, ge=0)
+    is_active: bool = True
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @field_validator("unit_price")
+    @classmethod
+    def normalize_unit_price(cls, value: Decimal) -> Decimal:
+        """Normalize the product price to two decimal places."""
+
+        return value.quantize(MONEY_QUANTUM)
+
+===== .\app\repositories\customer_repository.py =====
+
+from collections.abc import Sequence
+from datetime import UTC
+from uuid import UUID
+
+from pydantic import EmailStr
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database.commerce_models import CustomerRecord
+from app.models.customer import Customer
+
+
+class CustomerRepository:
+    """Persists and retrieves customers from the local database."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create(self, customer: Customer) -> Customer:
+        """Persist one customer and return the validated domain model."""
+
+        record = CustomerRecord(
+            id=str(customer.id),
+            full_name=customer.full_name,
+            email=str(customer.email),
+            phone=customer.phone,
+            is_active=customer.is_active,
+            created_at=customer.created_at,
+        )
+
+        self._session.add(record)
+        await self._session.commit()
+        await self._session.refresh(record)
+
+        return self._to_domain(record)
+
+    async def get_by_id(self, customer_id: UUID) -> Customer | None:
+        """Return one customer by identifier, or None when not found."""
+
+        record = await self._session.get(
+            CustomerRecord,
+            str(customer_id),
+        )
+
+        if record is None:
+            return None
+
+        return self._to_domain(record)
+
+    async def get_by_email(self, email: EmailStr | str) -> Customer | None:
+        """Return one customer by email address, or None when not found."""
+
+        statement = select(CustomerRecord).where(
+            CustomerRecord.email == str(email)
+        )
+        result = await self._session.execute(statement)
+        record = result.scalar_one_or_none()
+
+        if record is None:
+            return None
+
+        return self._to_domain(record)
+
+    async def list_active(
+        self,
+        limit: int = 100,
+    ) -> tuple[Customer, ...]:
+        """Return active customers in stable creation order."""
+
+        if limit < 1:
+            raise ValueError("limit must be greater than zero.")
+
+        statement = (
+            select(CustomerRecord)
+            .where(CustomerRecord.is_active.is_(True))
+            .order_by(
+                CustomerRecord.created_at.asc(),
+                CustomerRecord.id.asc(),
+            )
+            .limit(limit)
+        )
+        result = await self._session.execute(statement)
+        records: Sequence[CustomerRecord] = result.scalars().all()
+
+        return tuple(self._to_domain(record) for record in records)
+
+    async def update(
+        self,
+        customer_id: UUID,
+        customer: Customer,
+    ) -> Customer | None:
+        """Update mutable customer fields without changing its identity."""
+
+        record = await self._session.get(
+            CustomerRecord,
+            str(customer_id),
+        )
+
+        if record is None:
+            return None
+
+        record.full_name = customer.full_name
+        record.email = str(customer.email)
+        record.phone = customer.phone
+        record.is_active = customer.is_active
+
+        await self._session.commit()
+        await self._session.refresh(record)
+
+        return self._to_domain(record)
+
+    async def deactivate(
+        self,
+        customer_id: UUID,
+    ) -> Customer | None:
+        """Deactivate one customer and return its current domain model."""
+
+        record = await self._session.get(
+            CustomerRecord,
+            str(customer_id),
+        )
+
+        if record is None:
+            return None
+
+        if record.is_active:
+            record.is_active = False
+            await self._session.commit()
+            await self._session.refresh(record)
+
+        return self._to_domain(record)
+
+    @staticmethod
+    def _to_domain(record: CustomerRecord) -> Customer:
+        """Convert a database customer record to a domain model."""
+
+        created_at = record.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
+
+        created_at = record.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
+
+        return Customer(
+            id=UUID(record.id),
+            full_name=record.full_name,
+            email=record.email,
+            phone=record.phone,
+            is_active=record.is_active,
+            created_at=created_at,
+        )
+
+
+
+
+
+===== .\app\repositories\product_repository.py =====
+
+from collections.abc import Sequence
+from datetime import UTC
+from uuid import UUID
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database.commerce_models import ProductRecord
+from app.models.common import Currency
+from app.models.product import Product
+
+
+class ProductRepository:
+    """Persists and retrieves products from the local database."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create(self, product: Product) -> Product:
+        """Persist one product and return its validated domain model."""
+
+        record = ProductRecord(
+            id=str(product.id),
+            sku=product.sku,
+            name=product.name,
+            description=product.description,
+            unit_price=product.unit_price,
+            currency=product.currency.value,
+            stock_quantity=product.stock_quantity,
+            is_active=product.is_active,
+            created_at=product.created_at,
+        )
+
+        self._session.add(record)
+        await self._session.commit()
+        await self._session.refresh(record)
+
+        return self._to_domain(record)
+
+    async def get_by_id(
+        self,
+        product_id: UUID,
+    ) -> Product | None:
+        """Return one product by identifier, or None when not found."""
+
+        record = await self._session.get(
+            ProductRecord,
+            str(product_id),
+        )
+
+        if record is None:
+            return None
+
+        return self._to_domain(record)
+
+    async def get_by_sku(
+        self,
+        sku: str,
+    ) -> Product | None:
+        """Return one product by SKU, or None when not found."""
+
+        statement = select(ProductRecord).where(
+            ProductRecord.sku == sku
+        )
+        result = await self._session.execute(statement)
+        record = result.scalar_one_or_none()
+
+        if record is None:
+            return None
+
+        return self._to_domain(record)
+
+    async def list_active(
+        self,
+        limit: int = 100,
+    ) -> tuple[Product, ...]:
+        """Return active products in stable creation order."""
+
+        if limit < 1:
+            raise ValueError("limit must be greater than zero.")
+
+        statement = (
+            select(ProductRecord)
+            .where(ProductRecord.is_active.is_(True))
+            .order_by(
+                ProductRecord.created_at.asc(),
+                ProductRecord.id.asc(),
+            )
+            .limit(limit)
+        )
+        result = await self._session.execute(statement)
+        records: Sequence[ProductRecord] = result.scalars().all()
+
+        return tuple(self._to_domain(record) for record in records)
+
+    async def update(
+        self,
+        product_id: UUID,
+        product: Product,
+    ) -> Product | None:
+        """Update mutable product fields without changing its identity."""
+
+        record = await self._session.get(
+            ProductRecord,
+            str(product_id),
+        )
+
+        if record is None:
+            return None
+
+        record.sku = product.sku
+        record.name = product.name
+        record.description = product.description
+        record.unit_price = product.unit_price
+        record.currency = product.currency.value
+        record.stock_quantity = product.stock_quantity
+        record.is_active = product.is_active
+
+        await self._session.commit()
+        await self._session.refresh(record)
+
+        return self._to_domain(record)
+
+    async def adjust_stock(
+        self,
+        product_id: UUID,
+        quantity_delta: int,
+    ) -> Product | None:
+        """Adjust stock by a signed quantity without allowing negative stock."""
+
+        record = await self._session.get(
+            ProductRecord,
+            str(product_id),
+        )
+
+        if record is None:
+            return None
+
+        new_quantity = record.stock_quantity + quantity_delta
+        if new_quantity < 0:
+            raise ValueError("stock quantity cannot be negative.")
+
+        if new_quantity != record.stock_quantity:
+            record.stock_quantity = new_quantity
+            await self._session.commit()
+            await self._session.refresh(record)
+
+        return self._to_domain(record)
+
+    async def deactivate(
+        self,
+        product_id: UUID,
+    ) -> Product | None:
+        """Deactivate one product and return its current domain model."""
+
+        record = await self._session.get(
+            ProductRecord,
+            str(product_id),
+        )
+
+        if record is None:
+            return None
+
+        if record.is_active:
+            record.is_active = False
+            await self._session.commit()
+            await self._session.refresh(record)
+
+        return self._to_domain(record)
+
+    @staticmethod
+    def _to_domain(record: ProductRecord) -> Product:
+        """Convert a database product record to a domain model."""
+
+        created_at = record.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
+
+        return Product(
+            id=UUID(record.id),
+            sku=record.sku,
+            name=record.name,
+            description=record.description,
+            unit_price=record.unit_price,
+            currency=Currency(record.currency),
+            stock_quantity=record.stock_quantity,
+            is_active=record.is_active,
+            created_at=created_at,
+        )
+
+
+===== .\app\services\state_transition_service.py =====
+
+from decimal import Decimal
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.governance.models import (
+    ActionType,
+    GovernanceDecision,
+    GovernancePolicy,
+    GovernanceRequest,
+    GovernanceResult,
+)
+from app.models.common import OrderStatus, PaymentStatus
+from app.models.order import Order
+from app.models.payment import Payment
+from app.models.transitions import (
+    OrderTransitionOutcome,
+    PaymentTransitionOutcome,
+)
+from app.repositories.governance_audit_repository import (
+    GovernanceAuditRepository,
+)
+from app.services.governance_service import GovernanceService
+
+ORDER_TRANSITIONS: dict[OrderStatus, frozenset[OrderStatus]] = {
+    OrderStatus.DRAFT: frozenset(
+        {
+            OrderStatus.PENDING_APPROVAL,
+            OrderStatus.CANCELLED,
+        }
+    ),
+    OrderStatus.PENDING_APPROVAL: frozenset(
+        {
+            OrderStatus.APPROVED,
+            OrderStatus.CANCELLED,
+        }
+    ),
+    OrderStatus.APPROVED: frozenset(
+        {
+            OrderStatus.PROCESSING,
+            OrderStatus.CANCELLED,
+        }
+    ),
+    OrderStatus.PROCESSING: frozenset(
+        {
+            OrderStatus.COMPLETED,
+            OrderStatus.CANCELLED,
+        }
+    ),
+    OrderStatus.COMPLETED: frozenset(),
+    OrderStatus.CANCELLED: frozenset(),
+}
+
+
+PAYMENT_TRANSITIONS: dict[PaymentStatus, frozenset[PaymentStatus]] = {
+    PaymentStatus.PENDING: frozenset(
+        {
+            PaymentStatus.AUTHORIZED,
+            PaymentStatus.FAILED,
+            PaymentStatus.CANCELLED,
+        }
+    ),
+    PaymentStatus.AUTHORIZED: frozenset(
+        {
+            PaymentStatus.CAPTURED,
+            PaymentStatus.FAILED,
+            PaymentStatus.CANCELLED,
+        }
+    ),
+    PaymentStatus.CAPTURED: frozenset(
+        {
+            PaymentStatus.REFUNDED,
+        }
+    ),
+    PaymentStatus.FAILED: frozenset(),
+    PaymentStatus.REFUNDED: frozenset(),
+    PaymentStatus.CANCELLED: frozenset(),
+}
+
+
+class StateTransitionService:
+    """Validates, governs, audits, and applies local state transitions."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._governance_service = GovernanceService(session)
+        self._audit_repository = GovernanceAuditRepository(session)
+
+    async def transition_order(
+        self,
+        order: Order,
+        target_status: OrderStatus,
+        *,
+        human_approved: bool = False,
+        policy: GovernancePolicy | None = None,
+        reason: str | None = None,
+    ) -> OrderTransitionOutcome:
+        """Attempt an order transition without mutating the original order."""
+
+        request = GovernanceRequest(
+            action=ActionType.ORDER_STATUS_TRANSITION,
+            amount=order.total_amount,
+            currency=order.currency,
+            human_approved=human_approved,
+            reason=reason,
+        )
+
+        if target_status not in ORDER_TRANSITIONS[order.status]:
+            result = self._illegal_transition_result(
+                request=request,
+                entity_name="Order",
+                current_status=order.status.value,
+                target_status=target_status.value,
+            )
+            audit_entry = await self._audit_repository.add(request, result)
+
+            return OrderTransitionOutcome(
+                original_order=order,
+                order=order,
+                previous_status=order.status,
+                requested_status=target_status,
+                applied=False,
+                governance_result=result,
+                audit_entry=audit_entry,
+            )
+
+        evaluation = await self._governance_service.evaluate_and_record(
+            request,
+            policy,
+        )
+
+        transitioned_order = order
+        applied = evaluation.result.decision is GovernanceDecision.ALLOW
+
+        if applied:
+            transitioned_order = order.model_copy(
+                update={"status": target_status}
+            )
+
+        return OrderTransitionOutcome(
+            original_order=order,
+            order=transitioned_order,
+            previous_status=order.status,
+            requested_status=target_status,
+            applied=applied,
+            governance_result=evaluation.result,
+            audit_entry=evaluation.audit_entry,
+        )
+
+    async def transition_payment(
+        self,
+        payment: Payment,
+        target_status: PaymentStatus,
+        *,
+        human_approved: bool = False,
+        policy: GovernancePolicy | None = None,
+        reason: str | None = None,
+    ) -> PaymentTransitionOutcome:
+        """Attempt a payment-state transition without executing a payment."""
+
+        request = GovernanceRequest(
+            action=ActionType.PAYMENT_STATUS_TRANSITION,
+            amount=payment.amount,
+            currency=payment.currency,
+            human_approved=human_approved,
+            reason=reason,
+        )
+
+        if target_status not in PAYMENT_TRANSITIONS[payment.status]:
+            result = self._illegal_transition_result(
+                request=request,
+                entity_name="Payment",
+                current_status=payment.status.value,
+                target_status=target_status.value,
+            )
+            audit_entry = await self._audit_repository.add(request, result)
+
+            return PaymentTransitionOutcome(
+                original_payment=payment,
+                payment=payment,
+                previous_status=payment.status,
+                requested_status=target_status,
+                applied=False,
+                governance_result=result,
+                audit_entry=audit_entry,
+            )
+
+        evaluation = await self._governance_service.evaluate_and_record(
+            request,
+            policy,
+        )
+
+        transitioned_payment = payment
+        applied = evaluation.result.decision is GovernanceDecision.ALLOW
+
+        if applied:
+            transitioned_payment = payment.model_copy(
+                update={"status": target_status}
+            )
+
+        return PaymentTransitionOutcome(
+            original_payment=payment,
+            payment=transitioned_payment,
+            previous_status=payment.status,
+            requested_status=target_status,
+            applied=applied,
+            governance_result=evaluation.result,
+            audit_entry=evaluation.audit_entry,
+        )
+
+    @staticmethod
+    def _illegal_transition_result(
+        *,
+        request: GovernanceRequest,
+        entity_name: str,
+        current_status: str,
+        target_status: str,
+    ) -> GovernanceResult:
+        """Create a denied result for a transition outside the state graph."""
+
+        return GovernanceResult(
+            request_id=request.id,
+            decision=GovernanceDecision.DENY,
+            reasons=(
+                f"{entity_name} transition from "
+                f"'{current_status}' to '{target_status}' is not permitted.",
+            ),
+            requires_human=False,
+        )
+
+
+def is_order_transition_allowed(
+    current_status: OrderStatus,
+    target_status: OrderStatus,
+) -> bool:
+    """Return whether an order transition exists in the state graph."""
+
+    return target_status in ORDER_TRANSITIONS[current_status]
+
+
+def is_payment_transition_allowed(
+    current_status: PaymentStatus,
+    target_status: PaymentStatus,
+) -> bool:
+    """Return whether a payment transition exists in the state graph."""
+
+    return target_status in PAYMENT_TRANSITIONS[current_status]
+
+
+def transition_amount_is_positive(amount: Decimal) -> bool:
+    """Return whether an amount can participate in policy evaluation."""
+
+    return amount > Decimal("0.00")
+
+===== .\app\api\schemas\customer.py =====
+
+from datetime import datetime
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
+
+
+class CustomerCreate(BaseModel):
+    """Data accepted when creating a customer."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        str_strip_whitespace=True,
+    )
+
+    full_name: str = Field(min_length=2, max_length=120)
+    email: EmailStr
+    phone: str | None = Field(
+        default=None,
+        min_length=7,
+        max_length=30,
+    )
+
+
+class CustomerUpdate(BaseModel):
+    """Mutable customer data accepted by the API."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        str_strip_whitespace=True,
+    )
+
+    full_name: str | None = Field(
+        default=None,
+        min_length=2,
+        max_length=120,
+    )
+    email: EmailStr | None = None
+    phone: str | None = Field(
+        default=None,
+        min_length=7,
+        max_length=30,
+    )
+
+
+class CustomerResponse(BaseModel):
+    """Customer data returned by the API."""
+
+    id: UUID
+    full_name: str
+    email: EmailStr
+    phone: str | None
+    is_active: bool
+    created_at: datetime
+
+
+===== .\app\api\schemas\product.py =====
+
+from datetime import datetime
+from decimal import Decimal
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.models.common import Currency
+
+
+class ProductCreate(BaseModel):
+    """Data accepted when creating a product."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        str_strip_whitespace=True,
+    )
+
+    sku: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9._-]+$",
+    )
+    name: str = Field(min_length=2, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    unit_price: Decimal = Field(gt=Decimal("0"))
+    currency: Currency = Currency.USD
+    stock_quantity: int = Field(default=0, ge=0)
+
+
+class ProductUpdate(BaseModel):
+    """Mutable product data accepted by the API."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        str_strip_whitespace=True,
+    )
+
+    sku: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9._-]+$",
+    )
+    name: str | None = Field(default=None, min_length=2, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    unit_price: Decimal | None = Field(default=None, gt=Decimal("0"))
+    currency: Currency | None = None
+
+
+class StockAdjustment(BaseModel):
+    """Signed product stock adjustment."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    quantity_delta: int
+
+    @field_validator("quantity_delta")
+    @classmethod
+    def reject_zero_quantity_delta(cls, value: int) -> int:
+        """Require a non-zero stock adjustment."""
+
+        if value == 0:
+            raise ValueError("quantity_delta must not be zero")
+        return value
+
+
+class ProductResponse(BaseModel):
+    """Product data returned by the API."""
+
+    id: UUID
+    sku: str
+    name: str
+    description: str | None
+    unit_price: Decimal
+    currency: Currency
+    stock_quantity: int
+    is_active: bool
+    created_at: datetime
+
+
+===== NOT FOUND: .\app\api\schemas\order.py =====
+
+
+===== .\pyproject.toml =====
+
+[project]
+name = "ecommerce-autogen"
+version = "0.1.0"
+description = "Local-first AutoGen e-commerce project"
+requires-python = ">=3.11,<3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+addopts = "-v"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_configs = true
+warn_return_any = true
+disallow_untyped_defs = true
+ignore_missing_imports = true

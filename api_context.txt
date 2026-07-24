@@ -1,0 +1,794 @@
+﻿
+================ .\app\models\product.py ================
+
+from datetime import UTC, datetime
+from decimal import Decimal
+from uuid import UUID, uuid4
+
+from pydantic import Field, field_validator
+
+from app.models.common import MONEY_QUANTUM, Currency, StrictModel
+
+
+class Product(StrictModel):
+    """Represents a sellable product."""
+
+    id: UUID = Field(default_factory=uuid4)
+    sku: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9._-]+$")
+    name: str = Field(min_length=2, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    unit_price: Decimal = Field(gt=Decimal("0"))
+    currency: Currency = Currency.USD
+    stock_quantity: int = Field(default=0, ge=0)
+    is_active: bool = True
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @field_validator("unit_price")
+    @classmethod
+    def normalize_unit_price(cls, value: Decimal) -> Decimal:
+        """Normalize the product price to two decimal places."""
+
+        return value.quantize(MONEY_QUANTUM)
+
+================ .\app\models\common.py ================
+
+from decimal import Decimal
+from enum import StrEnum
+
+from pydantic import BaseModel, ConfigDict
+
+
+class StrictModel(BaseModel):
+    """Base model with strict and immutable domain behavior."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        str_strip_whitespace=True,
+        validate_assignment=True,
+    )
+
+
+class Currency(StrEnum):
+    """Supported currencies for local domain validation."""
+
+    USD = "USD"
+    EUR = "EUR"
+    GBP = "GBP"
+
+
+class OrderStatus(StrEnum):
+    """Lifecycle states supported by an order."""
+
+    DRAFT = "draft"
+    PENDING_APPROVAL = "pending_approval"
+    APPROVED = "approved"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+
+
+class PaymentStatus(StrEnum):
+    """Lifecycle states supported by a payment."""
+
+    PENDING = "pending"
+    AUTHORIZED = "authorized"
+    CAPTURED = "captured"
+    FAILED = "failed"
+    REFUNDED = "refunded"
+    CANCELLED = "cancelled"
+
+
+MONEY_QUANTUM = Decimal("0.01")
+
+================ .\app\api\customers.py ================
+
+from typing import Annotated
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.dependencies import get_session
+from app.api.schemas.customer import CustomerCreate, CustomerResponse
+from app.models.customer import Customer
+from app.repositories.customer_repository import CustomerRepository
+
+router = APIRouter(
+    prefix="/customers",
+    tags=["customers"],
+)
+
+SessionDependency = Annotated[
+    AsyncSession,
+    Depends(get_session),
+]
+
+
+def to_response(customer: Customer) -> CustomerResponse:
+    """Convert a customer domain model into an API response."""
+
+    return CustomerResponse(
+        id=customer.id,
+        full_name=customer.full_name,
+        email=customer.email,
+        phone=customer.phone,
+        is_active=customer.is_active,
+        created_at=customer.created_at,
+    )
+
+
+@router.post(
+    "",
+    response_model=CustomerResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_customer(
+    payload: CustomerCreate,
+    session: SessionDependency,
+) -> CustomerResponse:
+    """Create and persist a customer."""
+
+    repository = CustomerRepository(session)
+
+    existing_customer = await repository.get_by_email(payload.email)
+    if existing_customer is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A customer with this email already exists.",
+        )
+
+    customer = Customer(
+        full_name=payload.full_name,
+        email=payload.email,
+        phone=payload.phone,
+    )
+    created_customer = await repository.create(customer)
+
+    return to_response(created_customer)
+
+
+@router.get(
+    "",
+    response_model=list[CustomerResponse],
+)
+async def list_customers(
+    session: SessionDependency,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> list[CustomerResponse]:
+    """Return active customers in stable creation order."""
+
+    repository = CustomerRepository(session)
+    customers = await repository.list_active(limit=limit)
+
+    return [to_response(customer) for customer in customers]
+
+
+@router.get(
+    "/{customer_id}",
+    response_model=CustomerResponse,
+)
+async def get_customer(
+    customer_id: UUID,
+    session: SessionDependency,
+) -> CustomerResponse:
+    """Return one customer by identifier."""
+
+    repository = CustomerRepository(session)
+    customer = await repository.get_by_id(customer_id)
+
+    if customer is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Customer not found.",
+        )
+
+    return to_response(customer)
+
+
+================ .\app\api\schemas\customer.py ================
+
+from datetime import datetime
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
+
+
+class CustomerCreate(BaseModel):
+    """Payload accepted when creating a customer."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        str_strip_whitespace=True,
+    )
+
+    full_name: str = Field(min_length=2, max_length=120)
+    email: EmailStr
+    phone: str | None = Field(
+        default=None,
+        min_length=7,
+        max_length=30,
+    )
+
+
+class CustomerResponse(BaseModel):
+    """Customer data returned by the API."""
+
+    id: UUID
+    full_name: str
+    email: EmailStr
+    phone: str | None
+    is_active: bool
+    created_at: datetime
+
+
+================ .\app\api\dependencies.py ================
+
+from collections.abc import AsyncIterator
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database.session import AsyncSessionFactory
+
+
+async def get_session() -> AsyncIterator[AsyncSession]:
+    """Provide one database session to an API request."""
+
+    async with AsyncSessionFactory() as session:
+        try:
+            yield session
+        except Exception:
+            await session.rollback()
+            raise
+
+
+================ .\tests\test_api.py ================
+
+from collections.abc import AsyncIterator
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+from app.main import app
+
+
+@pytest.fixture
+async def api_client() -> AsyncIterator[AsyncClient]:
+    """Provide an asynchronous client for API tests."""
+
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+    ) as client:
+        yield client
+
+
+async def test_health_check_returns_healthy_status(
+    api_client: AsyncClient,
+) -> None:
+    response = await api_client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "database": "available",
+    }
+
+
+================ .\tests\test_product_repository.py ================
+
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime
+from decimal import Decimal
+from uuid import uuid4
+
+import pytest
+from sqlalchemy import delete
+
+from app.database.commerce_models import ProductRecord
+from app.database.init_db import init_database
+from app.database.session import AsyncSessionFactory
+from app.models.common import Currency
+from app.models.product import Product
+from app.repositories import ProductRepository
+
+TEST_SKU_PREFIX = "repo-product-test-"
+
+
+def make_product(
+    suffix: str,
+    *,
+    stock_quantity: int = 10,
+    is_active: bool = True,
+) -> Product:
+    """Create one valid product for repository tests."""
+
+    return Product(
+        sku=f"{TEST_SKU_PREFIX}{suffix}",
+        name=f"Product {suffix}",
+        description=f"Repository test product {suffix}",
+        unit_price=Decimal("19.99"),
+        currency=Currency.USD,
+        stock_quantity=stock_quantity,
+        is_active=is_active,
+    )
+
+
+async def clean_test_products() -> None:
+    """Delete only products created by this test module."""
+
+    async with AsyncSessionFactory() as session:
+        await session.execute(
+            delete(ProductRecord).where(
+                ProductRecord.sku.like(f"{TEST_SKU_PREFIX}%")
+            )
+        )
+        await session.commit()
+
+
+@pytest.fixture(autouse=True)
+async def initialize_product_database() -> AsyncIterator[None]:
+    """Initialize the database and isolate repository test records."""
+
+    await init_database()
+    await clean_test_products()
+
+    yield
+
+    await clean_test_products()
+
+
+async def test_create_persists_product() -> None:
+    product = make_product("create")
+
+    async with AsyncSessionFactory() as session:
+        repository = ProductRepository(session)
+        created = await repository.create(product)
+        stored = await repository.get_by_id(product.id)
+
+    assert created == product
+    assert stored == product
+    assert created.created_at.tzinfo is not None
+    assert created.created_at.utcoffset() == UTC.utcoffset(created.created_at)
+
+
+async def test_get_by_id_returns_product() -> None:
+    product = make_product("get-by-id")
+
+    async with AsyncSessionFactory() as session:
+        repository = ProductRepository(session)
+        await repository.create(product)
+        stored = await repository.get_by_id(product.id)
+
+    assert stored is not None
+    assert stored.id == product.id
+    assert stored.sku == product.sku
+
+
+async def test_get_by_sku_returns_product() -> None:
+    product = make_product("get-by-sku")
+
+    async with AsyncSessionFactory() as session:
+        repository = ProductRepository(session)
+        await repository.create(product)
+        stored = await repository.get_by_sku(product.sku)
+
+    assert stored is not None
+    assert stored.id == product.id
+    assert stored.sku == product.sku
+
+
+async def test_get_by_id_returns_none_for_unknown_product() -> None:
+    async with AsyncSessionFactory() as session:
+        repository = ProductRepository(session)
+        stored = await repository.get_by_id(uuid4())
+
+    assert stored is None
+
+
+async def test_get_by_sku_returns_none_for_unknown_product() -> None:
+    async with AsyncSessionFactory() as session:
+        repository = ProductRepository(session)
+        stored = await repository.get_by_sku(
+            f"{TEST_SKU_PREFIX}unknown"
+        )
+
+    assert stored is None
+
+
+async def test_list_active_returns_only_active_products() -> None:
+    active_product = make_product("list-active")
+    inactive_product = make_product(
+        "list-inactive",
+        is_active=False,
+    )
+
+    async with AsyncSessionFactory() as session:
+        repository = ProductRepository(session)
+        await repository.create(active_product)
+        await repository.create(inactive_product)
+        products = await repository.list_active()
+
+    returned_ids = {product.id for product in products}
+
+    assert active_product.id in returned_ids
+    assert inactive_product.id not in returned_ids
+
+
+async def test_update_changes_only_mutable_product_fields() -> None:
+    original = make_product("update-original")
+    replacement = Product(
+        id=uuid4(),
+        sku=f"{TEST_SKU_PREFIX}update-new",
+        name="Updated Product",
+        description="Updated repository product",
+        unit_price=Decimal("29.95"),
+        currency=Currency.GBP,
+        stock_quantity=25,
+        is_active=False,
+        created_at=datetime(2020, 1, 1, tzinfo=UTC),
+    )
+
+    async with AsyncSessionFactory() as session:
+        repository = ProductRepository(session)
+        await repository.create(original)
+        updated = await repository.update(original.id, replacement)
+
+    assert updated is not None
+    assert updated.id == original.id
+    assert updated.created_at == original.created_at
+    assert updated.sku == replacement.sku
+    assert updated.name == replacement.name
+    assert updated.description == replacement.description
+    assert updated.unit_price == Decimal("29.95")
+    assert updated.currency is Currency.GBP
+    assert updated.stock_quantity == 25
+    assert updated.is_active is False
+
+
+async def test_update_returns_none_for_unknown_product() -> None:
+    replacement = make_product("update-unknown")
+
+    async with AsyncSessionFactory() as session:
+        repository = ProductRepository(session)
+        updated = await repository.update(uuid4(), replacement)
+
+    assert updated is None
+
+
+async def test_adjust_stock_increases_and_decreases_quantity() -> None:
+    product = make_product(
+        "adjust-stock",
+        stock_quantity=10,
+    )
+
+    async with AsyncSessionFactory() as session:
+        repository = ProductRepository(session)
+        await repository.create(product)
+
+        increased = await repository.adjust_stock(product.id, 5)
+        decreased = await repository.adjust_stock(product.id, -3)
+
+    assert increased is not None
+    assert increased.stock_quantity == 15
+
+    assert decreased is not None
+    assert decreased.stock_quantity == 12
+
+
+async def test_adjust_stock_returns_none_for_unknown_product() -> None:
+    async with AsyncSessionFactory() as session:
+        repository = ProductRepository(session)
+        adjusted = await repository.adjust_stock(uuid4(), 5)
+
+    assert adjusted is None
+
+
+async def test_adjust_stock_rejects_negative_result() -> None:
+    product = make_product(
+        "negative-stock",
+        stock_quantity=4,
+    )
+
+    async with AsyncSessionFactory() as session:
+        repository = ProductRepository(session)
+        await repository.create(product)
+
+        with pytest.raises(
+            ValueError,
+            match="stock quantity cannot be negative",
+        ):
+            await repository.adjust_stock(product.id, -5)
+
+        stored = await repository.get_by_id(product.id)
+
+    assert stored is not None
+    assert stored.stock_quantity == 4
+
+
+async def test_deactivate_marks_product_inactive() -> None:
+    product = make_product("deactivate")
+
+    async with AsyncSessionFactory() as session:
+        repository = ProductRepository(session)
+        await repository.create(product)
+        deactivated = await repository.deactivate(product.id)
+
+    assert deactivated is not None
+    assert deactivated.id == product.id
+    assert deactivated.is_active is False
+
+
+async def test_deactivate_is_idempotent() -> None:
+    product = make_product("deactivate-idempotent")
+
+    async with AsyncSessionFactory() as session:
+        repository = ProductRepository(session)
+        await repository.create(product)
+        first_result = await repository.deactivate(product.id)
+        second_result = await repository.deactivate(product.id)
+
+    assert first_result is not None
+    assert second_result is not None
+    assert first_result.is_active is False
+    assert second_result.is_active is False
+    assert first_result == second_result
+
+
+async def test_deactivated_product_is_excluded_from_active_list() -> None:
+    product = make_product("excluded")
+
+    async with AsyncSessionFactory() as session:
+        repository = ProductRepository(session)
+        await repository.create(product)
+        await repository.deactivate(product.id)
+        active_products = await repository.list_active()
+
+    assert product.id not in {
+        active_product.id for active_product in active_products
+    }
+
+
+async def test_list_active_rejects_non_positive_limit() -> None:
+    async with AsyncSessionFactory() as session:
+        repository = ProductRepository(session)
+
+        with pytest.raises(
+            ValueError,
+            match="limit must be greater than zero",
+        ):
+            await repository.list_active(limit=0)
+
+
+================ .\tests\test_customer_repository.py ================
+
+from collections.abc import AsyncIterator
+from uuid import uuid4
+
+import pytest
+from sqlalchemy import delete
+
+from app.database.commerce_models import CustomerRecord
+from app.database.init_db import init_database
+from app.database.session import AsyncSessionFactory
+from app.models.customer import Customer
+from app.repositories.customer_repository import CustomerRepository
+
+_TEST_EMAIL_PATTERN = "repo-test-%@example.com"
+
+
+@pytest.fixture(autouse=True)
+async def isolate_customer_repository_records() -> AsyncIterator[None]:
+    """Initialize the schema and isolate records created by this test module."""
+
+    await init_database()
+
+    async with AsyncSessionFactory() as session:
+        await session.execute(
+            delete(CustomerRecord).where(
+                CustomerRecord.email.like(_TEST_EMAIL_PATTERN)
+            )
+        )
+        await session.commit()
+
+    yield
+
+    async with AsyncSessionFactory() as session:
+        await session.execute(
+            delete(CustomerRecord).where(
+                CustomerRecord.email.like(_TEST_EMAIL_PATTERN)
+            )
+        )
+        await session.commit()
+
+
+def _customer(
+    email: str,
+    *,
+    full_name: str = "Repository Test Customer",
+    phone: str | None = "+15550001000",
+    is_active: bool = True,
+) -> Customer:
+    """Build one validated customer for repository tests."""
+
+    return Customer(
+        full_name=full_name,
+        email=email,
+        phone=phone,
+        is_active=is_active,
+    )
+
+
+async def test_create_persists_customer() -> None:
+    customer = _customer("repo-test-create@example.com")
+
+    async with AsyncSessionFactory() as session:
+        repository = CustomerRepository(session)
+        created = await repository.create(customer)
+
+    async with AsyncSessionFactory() as session:
+        repository = CustomerRepository(session)
+        stored = await repository.get_by_id(customer.id)
+
+    assert created == customer
+    assert stored is not None
+    assert stored.id == customer.id
+    assert stored.email == customer.email
+
+
+async def test_get_by_id_returns_customer() -> None:
+    customer = _customer("repo-test-by-id@example.com")
+
+    async with AsyncSessionFactory() as session:
+        repository = CustomerRepository(session)
+        await repository.create(customer)
+        stored = await repository.get_by_id(customer.id)
+
+    assert stored is not None
+    assert stored.id == customer.id
+    assert stored.full_name == customer.full_name
+
+
+async def test_get_by_email_returns_customer() -> None:
+    customer = _customer("repo-test-by-email@example.com")
+
+    async with AsyncSessionFactory() as session:
+        repository = CustomerRepository(session)
+        await repository.create(customer)
+        stored = await repository.get_by_email(customer.email)
+
+    assert stored is not None
+    assert stored.id == customer.id
+    assert stored.email == customer.email
+
+
+async def test_get_by_id_returns_none_for_unknown_customer() -> None:
+    async with AsyncSessionFactory() as session:
+        repository = CustomerRepository(session)
+        stored = await repository.get_by_id(uuid4())
+
+    assert stored is None
+
+
+async def test_get_by_email_returns_none_for_unknown_customer() -> None:
+    async with AsyncSessionFactory() as session:
+        repository = CustomerRepository(session)
+        stored = await repository.get_by_email(
+            "repo-test-unknown@example.com"
+        )
+
+    assert stored is None
+
+
+async def test_list_active_returns_only_active_customers() -> None:
+    active_customer = _customer("repo-test-active@example.com")
+    inactive_customer = _customer(
+        "repo-test-inactive@example.com",
+        is_active=False,
+    )
+
+    async with AsyncSessionFactory() as session:
+        repository = CustomerRepository(session)
+        await repository.create(active_customer)
+        await repository.create(inactive_customer)
+        active_customers = await repository.list_active(limit=500)
+
+    active_ids = {customer.id for customer in active_customers}
+
+    assert active_customer.id in active_ids
+    assert inactive_customer.id not in active_ids
+
+
+async def test_update_changes_only_mutable_customer_fields() -> None:
+    original = _customer(
+        "repo-test-update-original@example.com",
+        full_name="Original Customer",
+        phone="+15550002000",
+    )
+    replacement = Customer(
+        id=uuid4(),
+        full_name="Updated Customer",
+        email="repo-test-update-new@example.com",
+        phone="+15550003000",
+        is_active=False,
+    )
+
+    async with AsyncSessionFactory() as session:
+        repository = CustomerRepository(session)
+        await repository.create(original)
+        updated = await repository.update(original.id, replacement)
+
+    assert updated is not None
+    assert updated.id == original.id
+    assert updated.created_at == original.created_at
+    assert updated.full_name == "Updated Customer"
+    assert str(updated.email) == "repo-test-update-new@example.com"
+    assert updated.phone == "+15550003000"
+    assert updated.is_active is False
+
+
+async def test_update_returns_none_for_unknown_customer() -> None:
+    replacement = _customer("repo-test-update-missing@example.com")
+
+    async with AsyncSessionFactory() as session:
+        repository = CustomerRepository(session)
+        updated = await repository.update(uuid4(), replacement)
+
+    assert updated is None
+
+
+async def test_deactivate_marks_customer_inactive() -> None:
+    customer = _customer("repo-test-deactivate@example.com")
+
+    async with AsyncSessionFactory() as session:
+        repository = CustomerRepository(session)
+        await repository.create(customer)
+        deactivated = await repository.deactivate(customer.id)
+
+    assert deactivated is not None
+    assert deactivated.id == customer.id
+    assert deactivated.is_active is False
+
+
+async def test_deactivate_is_idempotent() -> None:
+    customer = _customer("repo-test-idempotent@example.com")
+
+    async with AsyncSessionFactory() as session:
+        repository = CustomerRepository(session)
+        await repository.create(customer)
+        first_result = await repository.deactivate(customer.id)
+        second_result = await repository.deactivate(customer.id)
+
+    assert first_result is not None
+    assert second_result is not None
+    assert first_result.id == second_result.id
+    assert first_result.is_active is False
+    assert second_result.is_active is False
+
+
+async def test_deactivated_customer_is_excluded_from_active_list() -> None:
+    customer = _customer("repo-test-excluded@example.com")
+
+    async with AsyncSessionFactory() as session:
+        repository = CustomerRepository(session)
+        await repository.create(customer)
+        await repository.deactivate(customer.id)
+        active_customers = await repository.list_active(limit=500)
+
+    active_ids = {active_customer.id for active_customer in active_customers}
+
+    assert customer.id not in active_ids
+
+
+async def test_list_active_rejects_non_positive_limit() -> None:
+    async with AsyncSessionFactory() as session:
+        repository = CustomerRepository(session)
+
+        with pytest.raises(
+            ValueError,
+            match="limit must be greater than zero",
+        ):
+            await repository.list_active(limit=0)
+
