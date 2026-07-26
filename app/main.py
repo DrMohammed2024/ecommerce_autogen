@@ -2,6 +2,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from app.api.customers import router as customers_router
@@ -101,6 +102,59 @@ app = FastAPI(
 app.include_router(customers_router)
 app.include_router(orders_router)
 app.include_router(products_router)
+
+
+@app.get("/reference", include_in_schema=False)
+async def api_reference() -> HTMLResponse:
+    """Render a modern interactive API reference."""
+
+    return HTMLResponse(
+        """
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1"
+    >
+    <title>E-Commerce Autogen API Reference</title>
+    <style>
+        html,
+        body,
+        #app {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+        }
+
+        body {
+            background: #0b1020;
+        }
+    </style>
+</head>
+<body>
+    <div id="app"></div>
+
+    <script
+        src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"
+    ></script>
+    <script>
+        Scalar.createApiReference("#app", {
+            url: "/openapi.json",
+            theme: "purple",
+            layout: "modern",
+            darkMode: true,
+            hideModels: false,
+            hideDownloadButton: false,
+            showSidebar: true,
+            searchHotKey: "k"
+        });
+    </script>
+</body>
+</html>
+        """
+    )
 
 
 @app.get(
