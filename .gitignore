@@ -22,3 +22,5 @@ htmlcov/
 *_context.txt
 *_inspection.txt
 api_context.txt
+
+openapi.json
