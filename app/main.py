@@ -37,9 +37,64 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 settings = get_settings()
 
+API_DESCRIPTION = """
+## E-Commerce Autogen API
+
+واجهة برمجية لإدارة العمليات الأساسية لنظام التجارة الإلكترونية.
+
+### الوظائف الحالية
+
+- **Customers:** إنشاء العملاء وعرضهم وتحديثهم وتعطيلهم.
+- **Products:** إنشاء المنتجات وتحديثها وإدارة المخزون.
+- **Orders:** إنشاء الطلبات وعرض تفاصيلها.
+- **Health:** التحقق من جاهزية التطبيق وقاعدة البيانات.
+
+### دورة الاستخدام المقترحة
+
+1. إنشاء عميل.
+2. إنشاء منتج وتحديد السعر والمخزون.
+3. إنشاء طلب مرتبط بالعميل والمنتجات.
+4. التحقق من الطلب والكمية المتبقية في المخزون.
+
+### ملاحظات
+
+هذا الإصدار مخصص للتطوير والاختبار. ستُضاف لاحقًا المصادقة،
+والصلاحيات، والدفع، والشحن، والتقارير، والوظائف المتقدمة.
+"""
+
+OPENAPI_TAGS = [
+    {
+        "name": "health",
+        "description": ("فحص جاهزية التطبيق وإمكانية الاتصال بقاعدة البيانات."),
+    },
+    {
+        "name": "customers",
+        "description": ("إدارة بيانات العملاء، بما يشمل الإنشاء والعرض والتحديث والتعطيل."),
+    },
+    {
+        "name": "products",
+        "description": ("إدارة المنتجات والأسعار والعملات والكميات المتوفرة في المخزون."),
+    },
+    {
+        "name": "orders",
+        "description": ("إنشاء طلبات الشراء وعرضها، مع تحديث المخزون داخل معاملة واحدة."),
+    },
+]
+
 app = FastAPI(
-    title=settings.app_name,
+    title="E-Commerce Autogen API",
+    description=API_DESCRIPTION,
     version="0.1.0",
+    contact={
+        "name": "E-Commerce Autogen Team",
+    },
+    license_info={
+        "name": "Proprietary",
+    },
+    openapi_tags=OPENAPI_TAGS,
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
     lifespan=lifespan,
 )
 
@@ -52,6 +107,8 @@ app.include_router(products_router)
     "/health",
     response_model=HealthResponse,
     tags=["health"],
+    summary="Check application health",
+    description="Report application and database availability.",
 )
 async def health_check() -> HealthResponse:
     """Report application and database availability."""
